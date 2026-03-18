@@ -26,6 +26,7 @@ impl<const NW: usize> Bitboard<NW> {
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 #[hotpath::measure_all]
 impl<const NW: usize> Bitboard<NW> {
     /// Single bit set at `index`.
@@ -61,12 +62,10 @@ impl<const NW: usize> Bitboard<NW> {
     /// True if no bits are set.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        let mut i = 0;
-        while i < NW {
+        for i in 0..NW {
             if self.words[i] != 0 {
                 return false;
             }
-            i += 1;
         }
         true
     }
@@ -74,24 +73,15 @@ impl<const NW: usize> Bitboard<NW> {
     /// True if any bit is set.
     #[inline]
     pub fn is_nonzero(&self) -> bool {
-        let mut i = 0;
-        while i < NW {
-            if self.words[i] != 0 {
-                return true;
-            }
-            i += 1;
-        }
-        false
+        !self.is_empty()
     }
 
     /// Population count — number of set bits.
     #[inline]
     pub fn count(&self) -> u32 {
         let mut total = 0u32;
-        let mut i = 0;
-        while i < NW {
+        for i in 0..NW {
             total += self.words[i].count_ones();
-            i += 1;
         }
         total
     }
@@ -99,13 +89,11 @@ impl<const NW: usize> Bitboard<NW> {
     /// Index of the lowest set bit, or `None` if empty.
     #[inline]
     pub fn lowest_bit_index(&self) -> Option<usize> {
-        let mut i = 0;
-        while i < NW {
+        for i in 0..NW {
             let w = self.words[i];
             if w != 0 {
                 return Some(i * 64 + w.trailing_zeros() as usize);
             }
-            i += 1;
         }
         None
     }
@@ -127,13 +115,11 @@ impl<const NW: usize> Bitboard<NW> {
         if bit_shift == 0 {
             out[word_shift..NW].copy_from_slice(&self.words[..(NW - word_shift)]);
         } else {
-            let mut i = word_shift;
-            while i < NW {
+            for i in word_shift..NW {
                 out[i] = self.words[i - word_shift] << bit_shift;
                 if i > word_shift {
                     out[i] |= self.words[i - word_shift - 1] >> (64 - bit_shift);
                 }
-                i += 1;
             }
         }
         Bitboard { words: out }
@@ -156,13 +142,11 @@ impl<const NW: usize> Bitboard<NW> {
         if bit_shift == 0 {
             out[..(NW - word_shift)].copy_from_slice(&self.words[word_shift..]);
         } else {
-            let mut i = 0;
-            while i < NW - word_shift {
+            for i in 0..NW - word_shift {
                 out[i] = self.words[i + word_shift] >> bit_shift;
                 if i + word_shift + 1 < NW {
                     out[i] |= self.words[i + word_shift + 1] << (64 - bit_shift);
                 }
-                i += 1;
             }
         }
         Bitboard { words: out }
@@ -172,10 +156,8 @@ impl<const NW: usize> Bitboard<NW> {
     #[inline]
     pub fn andnot(self, rhs: Bitboard<NW>) -> Bitboard<NW> {
         let mut out = [0u64; NW];
-        let mut i = 0;
-        while i < NW {
+        for i in 0..NW {
             out[i] = self.words[i] & !rhs.words[i];
-            i += 1;
         }
         Bitboard { words: out }
     }
@@ -190,16 +172,15 @@ impl<const NW: usize> Bitboard<NW> {
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 #[hotpath::measure_all]
 impl<const NW: usize> BitAnd for Bitboard<NW> {
     type Output = Bitboard<NW>;
     #[inline]
     fn bitand(self, rhs: Bitboard<NW>) -> Bitboard<NW> {
         let mut out = [0u64; NW];
-        let mut i = 0;
-        while i < NW {
+        for i in 0..NW {
             out[i] = self.words[i] & rhs.words[i];
-            i += 1;
         }
         Bitboard { words: out }
     }
@@ -209,24 +190,21 @@ impl<const NW: usize> BitAnd for Bitboard<NW> {
 impl<const NW: usize> BitAndAssign for Bitboard<NW> {
     #[inline]
     fn bitand_assign(&mut self, rhs: Bitboard<NW>) {
-        let mut i = 0;
-        while i < NW {
+        for i in 0..NW {
             self.words[i] &= rhs.words[i];
-            i += 1;
         }
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 #[hotpath::measure_all]
 impl<const NW: usize> BitOr for Bitboard<NW> {
     type Output = Bitboard<NW>;
     #[inline]
     fn bitor(self, rhs: Bitboard<NW>) -> Bitboard<NW> {
         let mut out = [0u64; NW];
-        let mut i = 0;
-        while i < NW {
+        for i in 0..NW {
             out[i] = self.words[i] | rhs.words[i];
-            i += 1;
         }
         Bitboard { words: out }
     }
@@ -236,24 +214,21 @@ impl<const NW: usize> BitOr for Bitboard<NW> {
 impl<const NW: usize> BitOrAssign for Bitboard<NW> {
     #[inline]
     fn bitor_assign(&mut self, rhs: Bitboard<NW>) {
-        let mut i = 0;
-        while i < NW {
+        for i in 0..NW {
             self.words[i] |= rhs.words[i];
-            i += 1;
         }
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 #[hotpath::measure_all]
 impl<const NW: usize> Not for Bitboard<NW> {
     type Output = Bitboard<NW>;
     #[inline]
     fn not(self) -> Bitboard<NW> {
         let mut out = [0u64; NW];
-        let mut i = 0;
-        while i < NW {
+        for i in 0..NW {
             out[i] = !self.words[i];
-            i += 1;
         }
         Bitboard { words: out }
     }
