@@ -42,6 +42,37 @@ pub struct Game<const NW: usize> {
     position_hashes: Option<HashSet<u64>>,
 }
 
+struct EmptyRegionIter<'a, const NW: usize> {
+    remaining: Bitboard<NW>,
+    empty_mask: Bitboard<NW>,
+    black: Bitboard<NW>,
+    white: Bitboard<NW>,
+    geo: &'a BoardGeometry<NW>,
+}
+
+impl<const NW: usize> Iterator for EmptyRegionIter<'_, NW> {
+    type Item = (Bitboard<NW>, Option<Player>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let idx = self.remaining.lowest_bit_index()?;
+        let seed = Bitboard::single(idx);
+        let region = self.geo.flood_fill(seed, self.empty_mask);
+        self.remaining = self.remaining.andnot(region);
+
+        let region_neighbors = self.geo.neighbors(&region);
+        let black_adjacent = (region_neighbors & self.black).is_nonzero();
+        let white_adjacent = (region_neighbors & self.white).is_nonzero();
+
+        let owner = match (black_adjacent, white_adjacent) {
+            (true, false) => Some(Player::Black),
+            (false, true) => Some(Player::White),
+            _ => None,
+        };
+
+        Some((region, owner))
+    }
+}
+
 #[hotpath::measure_all]
 impl<const NW: usize> Game<NW> {
     pub fn new(width: u8, height: u8) -> Self {
@@ -275,32 +306,27 @@ impl<const NW: usize> Game<NW> {
         }
     }
 
-    pub fn score(&self) -> (f32, f32) {
-        let mut black_score: f32 = 0.0;
-        let mut white_score: f32 = self.komi;
-
-        black_score += self.board.black_stones().count() as f32;
-        white_score += self.board.white_stones().count() as f32;
-
+    fn empty_regions(&self) -> EmptyRegionIter<'_, NW> {
         let occupied = self.board.occupied();
-        let mut remaining_empty = self.board.empty_squares(self.geo.board_mask);
+        EmptyRegionIter {
+            remaining: self.board.empty_squares(self.geo.board_mask),
+            empty_mask: self.geo.board_mask.andnot(occupied),
+            black: self.board.black_stones(),
+            white: self.board.white_stones(),
+            geo: &self.geo,
+        }
+    }
 
-        while let Some(idx) = remaining_empty.lowest_bit_index() {
-            let seed = Bitboard::single(idx);
-            let empty_mask = self.geo.board_mask & !occupied;
-            let region = self.geo.flood_fill(seed, empty_mask);
+    pub fn score(&self) -> (f32, f32) {
+        let mut black_score = self.board.black_stones().count() as f32;
+        let mut white_score = self.board.white_stones().count() as f32 + self.komi;
 
-            remaining_empty &= !region;
-
-            let region_neighbors = self.geo.neighbors(&region);
-            let black_adjacent = (region_neighbors & self.board.black_stones()).is_nonzero();
-            let white_adjacent = (region_neighbors & self.board.white_stones()).is_nonzero();
-
+        for (region, owner) in self.empty_regions() {
             let territory = region.count() as f32;
-            match (black_adjacent, white_adjacent) {
-                (true, false) => black_score += territory,
-                (false, true) => white_score += territory,
-                _ => {}
+            match owner {
+                Some(Player::Black) => black_score += territory,
+                Some(Player::White) => white_score += territory,
+                None => {}
             }
         }
 
@@ -324,28 +350,14 @@ impl<const NW: usize> Game<NW> {
             ownership[idx] = -1.0;
         }
 
-        let occupied = self.board.occupied();
-        let mut remaining_empty = self.board.empty_squares(self.geo.board_mask);
-
-        while let Some(idx) = remaining_empty.lowest_bit_index() {
-            let seed = Bitboard::single(idx);
-            let empty_mask = self.geo.board_mask & !occupied;
-            let region = self.geo.flood_fill(seed, empty_mask);
-
-            remaining_empty &= !region;
-
-            let region_neighbors = self.geo.neighbors(&region);
-            let black_adjacent = (region_neighbors & self.board.black_stones()).is_nonzero();
-            let white_adjacent = (region_neighbors & self.board.white_stones()).is_nonzero();
-
-            let owner = match (black_adjacent, white_adjacent) {
-                (true, false) => 1.0,
-                (false, true) => -1.0,
-                _ => 0.0,
+        for (region, owner) in self.empty_regions() {
+            let value = match owner {
+                Some(Player::Black) => 1.0,
+                Some(Player::White) => -1.0,
+                None => 0.0,
             };
-
             for region_idx in region.iter_ones() {
-                ownership[region_idx] = owner;
+                ownership[region_idx] = value;
             }
         }
 
