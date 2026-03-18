@@ -389,7 +389,7 @@ fn test_gtp_engine_mixed_play_and_genmove() {
     let result = engine.genmove().expect("engine response");
     assert!(matches!(result, GenmoveResult::Move(_)));
 
-    engine.play(Move::place(2, 2)).expect("human move 2");
+    engine.play(Move::place(0, 0)).expect("human move 2");
     let result = engine.genmove().expect("engine response 2");
     assert!(matches!(result, GenmoveResult::Move(_)));
 
