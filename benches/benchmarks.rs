@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use rand::prelude::IndexedRandom;
-use rand::rngs::StdRng;
+use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use spooky_go::bitboard::nw_for_board;
 use spooky_go::encode::encode_game_planes;
@@ -11,7 +11,7 @@ use std::hint::black_box;
 /// Uses a fixed seed for reproducibility across benchmark runs.
 fn setup_midgame<const NW: usize>(width: u8, height: u8) -> Game<NW> {
     let mut game = Game::new(width, height);
-    let mut rng = StdRng::seed_from_u64(42);
+    let mut rng = SmallRng::seed_from_u64(42);
     for _ in 0..20 {
         let moves = game.legal_moves();
         // Filter to placement moves only so the board fills up
@@ -120,7 +120,7 @@ fn bench_random_playout_9x9(c: &mut Criterion) {
     c.bench_function("random_playout_9x9", |b| {
         b.iter(|| {
             let mut game = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
-            let mut rng = StdRng::seed_from_u64(123);
+            let mut rng = SmallRng::seed_from_u64(123);
             while !game.is_over() {
                 let moves = game.legal_moves();
                 let mv = moves
@@ -137,7 +137,7 @@ fn bench_random_playout_19x19(c: &mut Criterion) {
     c.bench_function("random_playout_19x19", |b| {
         b.iter(|| {
             let mut game = Game::<{ nw_for_board(19, 19) }>::new(19, 19);
-            let mut rng = StdRng::seed_from_u64(123);
+            let mut rng = SmallRng::seed_from_u64(123);
             while !game.is_over() {
                 let moves = game.legal_moves();
                 let mv = moves

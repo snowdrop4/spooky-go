@@ -232,7 +232,7 @@ mod tests {
             let moves_tested = Arc::clone(&total_moves_tested);
 
             let handle = thread::spawn(move || {
-                let mut rng = rand::rngs::StdRng::seed_from_u64(thread_id as u64);
+                let mut rng = rand::rngs::SmallRng::seed_from_u64(thread_id as u64);
                 let mut thread_moves_played = 0u64;
                 let mut thread_moves_tested = 0u64;
 
@@ -314,7 +314,7 @@ mod tests {
         use rand::SeedableRng;
 
         let mut game = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
-        let mut rng = rand::rngs::StdRng::seed_from_u64(123);
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(123);
 
         for _ in 0..20 {
             if game.is_over() {
