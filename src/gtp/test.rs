@@ -14,11 +14,11 @@ fn gnugo_available() -> bool {
 
 #[test]
 fn test_engine_unsupported_board_size_too_small() {
-    let result = GtpEngine::new("gnugo", &["--mode", "gtp"], 1, 7.5);
+    let result = GtpEngine::new("gnugo", &["--mode", "gtp"], 3, 7.5);
     assert!(result.is_err());
     match result {
-        Err(GtpError::UnsupportedBoardSize(1)) => {}
-        _ => panic!("expected UnsupportedBoardSize(1)"),
+        Err(GtpError::UnsupportedBoardSize(3)) => {}
+        _ => panic!("expected UnsupportedBoardSize(3)"),
     }
 }
 

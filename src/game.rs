@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::bitboard::{nw_for_board, Bitboard, BoardGeometry};
 use crate::board::{Board, STANDARD_COLS, STANDARD_ROWS};
+use crate::limits::assert_supported_board_dimensions;
 use crate::outcome::GameOutcome;
 use crate::player::Player;
 use crate::position::Position;
@@ -75,7 +76,10 @@ impl<const NW: usize> Iterator for EmptyRegionIter<'_, NW> {
 
 #[hotpath::measure_all]
 impl<const NW: usize> Game<NW> {
+    /// Create a game with dimensions in `4..=32`.
+    /// `NW` must match `ceil(width * height / 64)`.
     pub fn new(width: u8, height: u8) -> Self {
+        assert_supported_board_dimensions(width, height);
         let board_size = width as u16 * height as u16;
         let min_moves_before_pass_possible = board_size / 2;
         let max_moves = board_size * 3;
@@ -97,6 +101,7 @@ impl<const NW: usize> Game<NW> {
         max_moves: u16,
         superko: bool,
     ) -> Self {
+        assert_supported_board_dimensions(width, height);
         let board = Board::new(width, height);
         let position_hashes = if superko {
             let mut hashes = HashSet::new();

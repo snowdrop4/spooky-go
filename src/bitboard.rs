@@ -1,5 +1,7 @@
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 
+use crate::limits::assert_supported_board_dimensions;
+
 /// Compute the number of u64 words needed for a board of given dimensions.
 pub const fn nw_for_board(width: u8, height: u8) -> usize {
     ((width as u16 * height as u16) as usize).div_ceil(64)
@@ -278,8 +280,7 @@ pub struct BoardGeometry<const NW: usize> {
 impl<const NW: usize> BoardGeometry<NW> {
     /// Build geometry for a `width × height` board.
     pub fn new(width: u8, height: u8) -> Self {
-        debug_assert!((2..=32).contains(&width));
-        debug_assert!((2..=32).contains(&height));
+        assert_supported_board_dimensions(width, height);
         let area = width as u16 * height as u16;
         assert!(
             NW == (area as usize).div_ceil(64),
@@ -596,16 +597,16 @@ mod tests {
 
     #[test]
     fn test_non_square_board() {
-        let geo = BoardGeometry::<{ nw_for_board(5, 3) }>::new(5, 3);
-        assert_eq!(geo.area, 15);
-        assert_eq!(geo.board_mask.count(), 15);
+        let geo = BoardGeometry::<{ nw_for_board(5, 4) }>::new(5, 4);
+        assert_eq!(geo.area, 20);
+        assert_eq!(geo.board_mask.count(), 20);
 
-        // Corner (4, 2) -> index = 2*5+4 = 14
-        let corner = Bitboard::single(14);
+        // Corner (4, 3) -> index = 3*5+4 = 19
+        let corner = Bitboard::single(19);
         let nbrs = geo.neighbors(&corner);
-        // Expected: left=13, up=9
-        assert!(nbrs.get(13));
-        assert!(nbrs.get(9));
+        // Expected: left=18, up=14
+        assert!(nbrs.get(18));
+        assert!(nbrs.get(14));
         assert_eq!(nbrs.count(), 2);
     }
 

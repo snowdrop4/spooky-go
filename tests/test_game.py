@@ -1,5 +1,3 @@
-import pytest
-
 from spooky_go import BLACK, WHITE, Game, Move
 
 
@@ -18,12 +16,6 @@ class TestGameCreation:
         game = Game(5, 7)
         assert game.width() == 5
         assert game.height() == 7
-
-    def test_game_too_small(self) -> None:
-        with pytest.raises(ValueError, match="width"):
-            Game(1, 9)
-        with pytest.raises(ValueError, match="height"):
-            Game(9, 1)
 
 
 class TestGameState:

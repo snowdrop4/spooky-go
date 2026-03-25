@@ -1,4 +1,5 @@
 use crate::dispatch::{make_game_inner_with_options, GameInner};
+use crate::limits::{board_dimension_is_valid, MAX_GTP_BOARD_SIZE, MIN_GTP_BOARD_SIZE};
 use crate::player::Player;
 use crate::r#move::Move;
 
@@ -16,7 +17,9 @@ impl GtpEngine {
     /// Create a new GTP engine connection. Sends `boardsize`, `clear_board`, and `komi`
     /// to initialize the engine. The board is square (size x size).
     pub fn new(program: &str, args: &[&str], size: u8, komi: f32) -> Result<Self, GtpError> {
-        if !(2..=25).contains(&size) {
+        if !board_dimension_is_valid(size)
+            || !(MIN_GTP_BOARD_SIZE..=MAX_GTP_BOARD_SIZE).contains(&size)
+        {
             return Err(GtpError::UnsupportedBoardSize(size));
         }
 

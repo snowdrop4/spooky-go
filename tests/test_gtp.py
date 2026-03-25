@@ -27,7 +27,7 @@ def make_engine(size: int = 9, komi: float = 7.5) -> GtpEngine:
 class TestGtpEngineCreation:
     def test_invalid_size_too_small(self) -> None:
         with pytest.raises(RuntimeError):
-            make_engine(size=1)
+            make_engine(size=3)
 
     def test_invalid_size_too_large(self) -> None:
         with pytest.raises(RuntimeError):

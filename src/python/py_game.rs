@@ -4,6 +4,7 @@ use super::dispatch::*;
 use super::py_board::PyBoard;
 use super::py_game_outcome::PyGameOutcome;
 use super::py_move::PyMove;
+use super::validate_dimensions;
 use crate::encode;
 use crate::player::Player;
 use crate::position::Position;
@@ -18,18 +19,9 @@ pub struct PyGame {
 impl PyGame {
     #[new]
     pub fn new(width: usize, height: usize) -> PyResult<Self> {
-        if !(2..=32).contains(&width) {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Board width must be between 2 and 32",
-            ));
-        }
-        if !(2..=32).contains(&height) {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Board height must be between 2 and 32",
-            ));
-        }
+        let (width, height) = validate_dimensions(width, height)?;
         Ok(PyGame {
-            inner: make_game_inner(width as u8, height as u8),
+            inner: make_game_inner(width, height),
         })
     }
 
@@ -43,20 +35,11 @@ impl PyGame {
         max_moves: usize,
         superko: bool,
     ) -> PyResult<Self> {
-        if !(2..=32).contains(&width) {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Board width must be between 2 and 32",
-            ));
-        }
-        if !(2..=32).contains(&height) {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Board height must be between 2 and 32",
-            ));
-        }
+        let (width, height) = validate_dimensions(width, height)?;
         Ok(PyGame {
             inner: make_game_inner_with_options(
-                width as u8,
-                height as u8,
+                width,
+                height,
                 komi,
                 min_moves_before_pass_possible as u16,
                 max_moves as u16,

@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 use super::dispatch::*;
+use super::validate_dimensions;
 use crate::player::Player;
 use crate::position::Position;
 
@@ -22,18 +23,9 @@ impl PyBoard {
 impl PyBoard {
     #[new]
     pub fn new(width: usize, height: usize) -> PyResult<Self> {
-        if !(2..=32).contains(&width) {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Board width must be between 2 and 32",
-            ));
-        }
-        if !(2..=32).contains(&height) {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Board height must be between 2 and 32",
-            ));
-        }
+        let (width, height) = validate_dimensions(width, height)?;
         Ok(PyBoard {
-            inner: make_board_inner(width as u8, height as u8),
+            inner: make_board_inner(width, height),
         })
     }
 
