@@ -16,6 +16,7 @@ pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
 paste = "1.0"
 hotpath = { version = "0.14" }
 rand = { version = "0.10.0", optional = true }
+numpy = { version = "0.28", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
@@ -33,7 +34,7 @@ required-features = ["bench"]
 
 [features]
 default = []
-python = ["pyo3"]
+python = ["pyo3", "numpy"]
 bench = []
 hotpath = ["hotpath/hotpath"]
 hotpath-alloc = ["hotpath/hotpath-alloc"]

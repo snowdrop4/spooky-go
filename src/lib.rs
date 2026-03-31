@@ -34,6 +34,7 @@ fn spooky_go(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMove>()?;
     m.add_class::<PyGameOutcome>()?;
     m.add_class::<PyGtpEngine>()?;
+    m.add_function(wrap_pyfunction!(augment_symmetries, m)?)?;
     m.add("BLACK", Player::Black as i8)?;
     m.add("WHITE", Player::White as i8)?;
     m.add("TOTAL_INPUT_PLANES", encode::TOTAL_INPUT_PLANES)?;
