@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::bitboard::{nw_for_board, Bitboard, BoardGeometry};
 use crate::board::{Board, STANDARD_COLS, STANDARD_ROWS};
+use crate::encode::HISTORY_LENGTH;
 use crate::limits::assert_supported_board_dimensions;
 use crate::outcome::GameOutcome;
 use crate::player::Player;
@@ -22,6 +23,48 @@ struct MoveHistoryEntry<const NW: usize> {
     move_: Move,
     captured_stones: Bitboard<NW>,
     previous_ko_point: Option<Position>,
+}
+
+const STATE_HASH_HISTORY_LENGTH: usize = HISTORY_LENGTH - 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StateKeyHistoryEntry<const NW: usize> {
+    move_: Move,
+    captured_stones: Bitboard<NW>,
+    previous_ko_point: Option<Position>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StateHash<const NW: usize> {
+    board: Board<NW>,
+    current_player: Player,
+    move_count: usize,
+    recent_move_history: Vec<StateKeyHistoryEntry<NW>>,
+    is_over: bool,
+    outcome: Option<GameOutcome>,
+    consecutive_passes: u8,
+    ko_point: Option<Position>,
+    komi_bits: u32,
+    min_moves_before_pass_possible: u16,
+    max_moves: u16,
+    superko: bool,
+    seen_position_hashes: Vec<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TranspositionHash<const NW: usize> {
+    board: Board<NW>,
+    current_player: Player,
+    move_count: usize,
+    is_over: bool,
+    outcome: Option<GameOutcome>,
+    consecutive_passes: u8,
+    ko_point: Option<Position>,
+    komi_bits: u32,
+    min_moves_before_pass_possible: u16,
+    max_moves: u16,
+    superko: bool,
+    seen_position_hashes: Vec<u64>,
 }
 
 pub const DEFAULT_KOMI: f32 = 7.5;
@@ -181,6 +224,66 @@ impl<const NW: usize> Game<NW> {
 
     pub fn move_history(&self) -> Vec<Move> {
         self.move_history.iter().map(|e| e.move_).collect()
+    }
+
+    pub fn state_hash(&self) -> StateHash<NW> {
+        let recent_history_start = self
+            .move_history
+            .len()
+            .saturating_sub(STATE_HASH_HISTORY_LENGTH);
+        let mut seen_position_hashes = self
+            .position_hashes
+            .as_ref()
+            .map(|hashes| hashes.iter().copied().collect::<Vec<u64>>())
+            .unwrap_or_default();
+        seen_position_hashes.sort_unstable();
+
+        StateHash {
+            board: self.board,
+            current_player: self.current_player,
+            move_count: self.move_history.len(),
+            recent_move_history: self.move_history[recent_history_start..]
+                .iter()
+                .map(|entry| StateKeyHistoryEntry {
+                    move_: entry.move_,
+                    captured_stones: entry.captured_stones,
+                    previous_ko_point: entry.previous_ko_point,
+                })
+                .collect(),
+            is_over: self.is_over,
+            outcome: self.outcome,
+            consecutive_passes: self.consecutive_passes,
+            ko_point: self.ko_point,
+            komi_bits: self.komi.to_bits(),
+            min_moves_before_pass_possible: self.min_moves_before_pass_possible,
+            max_moves: self.max_moves,
+            superko: self.superko,
+            seen_position_hashes,
+        }
+    }
+
+    pub fn transposition_hash(&self) -> TranspositionHash<NW> {
+        let mut seen_position_hashes = self
+            .position_hashes
+            .as_ref()
+            .map(|hashes| hashes.iter().copied().collect::<Vec<u64>>())
+            .unwrap_or_default();
+        seen_position_hashes.sort_unstable();
+
+        TranspositionHash {
+            board: self.board,
+            current_player: self.current_player,
+            move_count: self.move_history.len(),
+            is_over: self.is_over,
+            outcome: self.outcome,
+            consecutive_passes: self.consecutive_passes,
+            ko_point: self.ko_point,
+            komi_bits: self.komi.to_bits(),
+            min_moves_before_pass_possible: self.min_moves_before_pass_possible,
+            max_moves: self.max_moves,
+            superko: self.superko,
+            seen_position_hashes,
+        }
     }
 
     pub fn ko_point(&self) -> Option<Position> {
