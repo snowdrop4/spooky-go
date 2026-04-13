@@ -1,4 +1,4 @@
-from spooky_go import TOTAL_INPUT_PLANES, Game, Move
+from spooky_go import GLOBAL_INPUT_FEATURES, SPATIAL_INPUT_PLANES, Game, Move
 
 
 def get_plane_value(
@@ -13,75 +13,82 @@ def get_plane_value(
 
 
 class TestConstants:
-    def test_total_input_planes(self) -> None:
-        # Should be (HISTORY_LENGTH * 2) + 1 = 17
-        assert TOTAL_INPUT_PLANES == 17
+    def test_feature_counts(self) -> None:
+        assert SPATIAL_INPUT_PLANES == 18
+        assert GLOBAL_INPUT_FEATURES == 10
 
 
 class TestGameEncoding:
-    def test_encode_game_planes_shape(self) -> None:
+    def test_encode_spatial_planes_shape(self) -> None:
         game = Game(9, 9)
-        data, num_planes, height, width = game.encode_game_planes()
+        data, num_planes, height, width = game.encode_spatial_planes()
 
-        assert num_planes == TOTAL_INPUT_PLANES
+        assert num_planes == SPATIAL_INPUT_PLANES
         assert height == 9
         assert width == 9
         assert len(data) == num_planes * height * width
 
-    def test_encode_game_planes_empty(self) -> None:
+    def test_encode_global_state_features_shape(self) -> None:
         game = Game(9, 9)
-        data, _num_planes, height, width = game.encode_game_planes()
+        features = game.encode_global_state_features()
+        assert len(features) == GLOBAL_INPUT_FEATURES
 
-        # First 16 planes should be zeros (current, opponent x 8 history)
-        for plane_idx in range(16):
-            for row in range(height):
-                for col in range(width):
-                    assert get_plane_value(data, plane_idx, row, col, height, width) == 0.0
+    def test_empty_board_has_on_board_plane_and_rules(self) -> None:
+        game = Game(9, 9)
+        spatial, _num_planes, height, width = game.encode_spatial_planes()
+        global_features = game.encode_global_state_features()
 
-        # Last plane is color plane (Black's turn = 1.0)
         for row in range(height):
             for col in range(width):
-                assert get_plane_value(data, 16, row, col, height, width) == 1.0
+                assert get_plane_value(spatial, 0, row, col, height, width) == 1.0
+                assert get_plane_value(spatial, 1, row, col, height, width) == 0.0
+                assert get_plane_value(spatial, 2, row, col, height, width) == 0.0
 
-    def test_encode_game_planes_with_pieces(self) -> None:
+        assert global_features[5] == -0.5
+        assert global_features[6] == 0.0
+        assert global_features[7] == 1.0
+        assert global_features[8] == 0.0
+
+    def test_encode_spatial_planes_with_pieces(self) -> None:
         game = Game(9, 9)
-        game.make_move(Move.place(4, 4))  # Black at (4, 4)
-        game.make_move(Move.place(3, 3))  # White at (3, 3)
-
-        # Now it's Black's turn, so perspective is Black
-        data, _num_planes, height, width = game.encode_game_planes()
-
-        # Plane 0: current player (Black) stones
-        # Plane 1: opponent (White) stones
-
-        # Black stone at (4, 4)
-        assert get_plane_value(data, 0, 4, 4, height, width) == 1.0
-
-        # White stone at (3, 3)
-        assert get_plane_value(data, 1, 3, 3, height, width) == 1.0
-
-    def test_encode_game_planes_color_plane(self) -> None:
-        game = Game(9, 9)
-
-        # Black's turn
-        data, _num_planes, height, width = game.encode_game_planes()
-        assert get_plane_value(data, 16, 0, 0, height, width) == 1.0
-
-        # After Black moves, White's turn
         game.make_move(Move.place(4, 4))
-        data, _num_planes, height, width = game.encode_game_planes()
-        assert get_plane_value(data, 16, 0, 0, height, width) == 0.0
+        game.make_move(Move.place(3, 4))
 
-    def test_encode_game_planes_different_sizes(self) -> None:
+        spatial, _num_planes, height, width = game.encode_spatial_planes()
+
+        assert get_plane_value(spatial, 1, 4, 4, height, width) == 1.0
+        assert get_plane_value(spatial, 2, 4, 3, height, width) == 1.0
+        assert get_plane_value(spatial, 5, 4, 4, height, width) == 1.0
+        assert get_plane_value(spatial, 5, 4, 3, height, width) == 1.0
+
+    def test_last_move_plane_and_pass_history(self) -> None:
+        game = Game.with_options(
+            width=5,
+            height=5,
+            komi=7.5,
+            min_moves_before_pass_possible=0,
+            max_moves=100,
+            superko=True,
+        )
+        game.make_move(Move.pass_move())
+        game.make_move(Move.place(1, 2))
+
+        spatial, _num_planes, height, width = game.encode_spatial_planes()
+        global_features = game.encode_global_state_features()
+
+        assert get_plane_value(spatial, 7, 2, 1, height, width) == 1.0
+        assert global_features[1] == 1.0
+
+    def test_encode_spatial_planes_different_sizes(self) -> None:
         game_9 = Game(9, 9)
-        data_9, num_planes_9, height_9, width_9 = game_9.encode_game_planes()
+        data_9, num_planes_9, height_9, width_9 = game_9.encode_spatial_planes()
 
         assert height_9 == 9
         assert width_9 == 9
         assert len(data_9) == num_planes_9 * 9 * 9
 
         game_19 = Game(19, 19)
-        data_19, num_planes_19, height_19, width_19 = game_19.encode_game_planes()
+        data_19, num_planes_19, height_19, width_19 = game_19.encode_spatial_planes()
 
         assert height_19 == 19
         assert width_19 == 19
@@ -111,10 +118,10 @@ class TestActionDecoding:
 
     def test_total_actions(self) -> None:
         game_9 = Game(9, 9)
-        assert game_9.total_actions() == 82  # 81 + pass
+        assert game_9.total_actions() == 82
 
         game_19 = Game(19, 19)
-        assert game_19.total_actions() == 362  # 361 + pass
+        assert game_19.total_actions() == 362
 
 
 class TestEncodingConsistency:
@@ -123,22 +130,28 @@ class TestEncodingConsistency:
         game.make_move(Move.place(4, 4))
         game.make_move(Move.place(3, 3))
 
-        planes1 = game.encode_game_planes()
-        planes2 = game.encode_game_planes()
+        spatial1 = game.encode_spatial_planes()
+        spatial2 = game.encode_spatial_planes()
+        global1 = game.encode_global_state_features()
+        global2 = game.encode_global_state_features()
 
-        assert planes1 == planes2
+        assert spatial1 == spatial2
+        assert global1 == global2
 
     def test_encoding_after_unmake(self) -> None:
         game = Game(9, 9)
-        initial_planes = game.encode_game_planes()
+        initial_spatial = game.encode_spatial_planes()
+        initial_global = game.encode_global_state_features()
 
         game.make_move(Move.place(4, 4))
         game.make_move(Move.place(3, 3))
         game.unmake_move()
         game.unmake_move()
 
-        final_planes = game.encode_game_planes()
-        assert initial_planes == final_planes
+        final_spatial = game.encode_spatial_planes()
+        final_global = game.encode_global_state_features()
+        assert initial_spatial == final_spatial
+        assert initial_global == final_global
 
     def test_different_positions_different_encoding(self) -> None:
         game1 = Game(9, 9)
@@ -147,7 +160,7 @@ class TestEncodingConsistency:
         game2 = Game(9, 9)
         game2.make_move(Move.place(1, 0))
 
-        planes1 = game1.encode_game_planes()
-        planes2 = game2.encode_game_planes()
+        spatial1 = game1.encode_spatial_planes()
+        spatial2 = game2.encode_spatial_planes()
 
-        assert planes1 != planes2
+        assert spatial1 != spatial2

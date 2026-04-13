@@ -14,6 +14,7 @@ struct SpatialTransform {
 
 fn validate_batch_shapes(
     states_shape: &[usize],
+    global_inputs_shape: &[usize],
     policies_shape: &[usize],
     values_shape: &[usize],
     opponent_policies_shape: &[usize],
@@ -24,6 +25,11 @@ fn validate_batch_shapes(
     if states_shape.len() != 4 {
         return Err(PyValueError::new_err(
             "states must have shape [batch, planes, height, width]",
+        ));
+    }
+    if global_inputs_shape.len() != 2 {
+        return Err(PyValueError::new_err(
+            "global_inputs must have shape [batch, features]",
         ));
     }
     if policies_shape.len() != 2 {
@@ -61,6 +67,7 @@ fn validate_batch_shapes(
     let width = states_shape[3];
 
     if policies_shape[0] != sample_count
+        || global_inputs_shape[0] != sample_count
         || values_shape[0] != sample_count
         || opponent_policies_shape[0] != sample_count
         || opponent_policy_masks_shape[0] != sample_count
@@ -158,6 +165,7 @@ fn transform_position(
 pub fn augment_symmetries<'py>(
     py: Python<'py>,
     states: PyReadonlyArray4<'py, f32>,
+    global_inputs: PyReadonlyArray2<'py, f32>,
     policies: PyReadonlyArray2<'py, f32>,
     values: PyReadonlyArray1<'py, f32>,
     opponent_policies: PyReadonlyArray2<'py, f32>,
@@ -167,6 +175,7 @@ pub fn augment_symmetries<'py>(
 ) -> PyResult<(
     Bound<'py, PyArray4<f32>>,
     Bound<'py, PyArray2<f32>>,
+    Bound<'py, PyArray2<f32>>,
     Bound<'py, PyArray1<f32>>,
     Bound<'py, PyArray2<f32>>,
     Bound<'py, PyArray1<f32>>,
@@ -174,6 +183,7 @@ pub fn augment_symmetries<'py>(
     Bound<'py, PyArray1<f32>>,
 )> {
     let states = states.as_array();
+    let global_inputs = global_inputs.as_array();
     let policies = policies.as_array();
     let values = values.as_array();
     let opponent_policies = opponent_policies.as_array();
@@ -183,6 +193,7 @@ pub fn augment_symmetries<'py>(
 
     let (sample_count, plane_count, height, width, action_size) = validate_batch_shapes(
         states.shape(),
+        global_inputs.shape(),
         policies.shape(),
         values.shape(),
         opponent_policies.shape(),
@@ -199,6 +210,8 @@ pub fn augment_symmetries<'py>(
 
     let mut augmented_states =
         Array4::<f32>::zeros((augmented_sample_count, plane_count, height, width));
+    let mut augmented_global_inputs =
+        Array2::<f32>::zeros((augmented_sample_count, global_inputs.shape()[1]));
     let mut augmented_policies = Array2::<f32>::zeros((augmented_sample_count, action_size));
     let mut augmented_values = Array1::<f32>::zeros(augmented_sample_count);
     let mut augmented_opponent_policies =
@@ -209,6 +222,9 @@ pub fn augment_symmetries<'py>(
 
     for (transform_index, transform) in transforms.iter().copied().enumerate() {
         let sample_offset = transform_index * sample_count;
+        augmented_global_inputs
+            .slice_mut(s![sample_offset..sample_offset + sample_count, ..])
+            .assign(&global_inputs);
         augmented_values
             .slice_mut(s![sample_offset..sample_offset + sample_count])
             .assign(&values);
@@ -263,6 +279,7 @@ pub fn augment_symmetries<'py>(
 
     Ok((
         augmented_states.into_pyarray(py),
+        augmented_global_inputs.into_pyarray(py),
         augmented_policies.into_pyarray(py),
         augmented_values.into_pyarray(py),
         augmented_opponent_policies.into_pyarray(py),

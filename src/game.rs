@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::bitboard::{nw_for_board, Bitboard, BoardGeometry};
 use crate::board::{Board, STANDARD_COLS, STANDARD_ROWS};
-use crate::encode::HISTORY_LENGTH;
+use crate::encode::RECENT_MOVE_COUNT;
 use crate::limits::assert_supported_board_dimensions;
 use crate::outcome::GameOutcome;
 use crate::player::Player;
@@ -64,7 +64,7 @@ impl std::fmt::Display for SetupError {
 
 impl std::error::Error for SetupError {}
 
-const STATE_HASH_HISTORY_LENGTH: usize = HISTORY_LENGTH - 1;
+const STATE_HASH_HISTORY_LENGTH: usize = RECENT_MOVE_COUNT;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct StateKeyHistoryEntry<const NW: usize> {

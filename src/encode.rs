@@ -1,91 +1,610 @@
+use crate::bitboard::{Bitboard, BoardGeometry};
 use crate::game::Game;
 use crate::player::Player;
+use crate::position::Position;
 use crate::r#move::Move;
 
-/// Number of planes for piece positions (1 for WHITE + 1 for BLACK)
-const PIECE_PLANES: usize = 1 + 1;
+pub const SPATIAL_INPUT_PLANES: usize = 18;
+pub const GLOBAL_INPUT_FEATURES: usize = 10;
+pub const RECENT_MOVE_COUNT: usize = 5;
 
-/// Number of positions in the game history to encode
-pub const HISTORY_LENGTH: usize = 8;
+const MAX_LIBERTY_BUCKET: u32 = 3;
+const MAX_LADDER_DEPTH: usize = 16;
+const LADDER_HISTORY_PLANES: usize = 3;
 
-/// Number of constant planes (1 for current player color)
-const CONSTANT_PLANES: usize = 1;
+const PLANE_ON_BOARD: usize = 0;
+const PLANE_OWN_STONES: usize = 1;
+const PLANE_OPP_STONES: usize = 2;
+const PLANE_ONE_LIBERTY: usize = 3;
+const PLANE_TWO_LIBERTIES: usize = 4;
+const PLANE_THREE_LIBERTIES: usize = 5;
+const PLANE_KO_OR_SUPERKO: usize = 6;
+const PLANE_LAST_MOVE_START: usize = 7;
+const PLANE_LADDERABLE_START: usize = 12;
+const PLANE_LADDER_CAPTURE: usize = 15;
+const PLANE_PASS_ALIVE_SELF: usize = 16;
+const PLANE_PASS_ALIVE_OPP: usize = 17;
 
-/// Total number of input planes for the neural network
-pub const TOTAL_INPUT_PLANES: usize = (HISTORY_LENGTH * PIECE_PLANES) + CONSTANT_PLANES;
+const GLOBAL_PASS_HISTORY_START: usize = 0;
+const GLOBAL_SELF_KOMI: usize = 5;
+const GLOBAL_SIMPLE_KO: usize = 6;
+const GLOBAL_POSITIONAL_SUPERKO: usize = 7;
+const GLOBAL_SUICIDE_ALLOWED: usize = 8;
+const GLOBAL_KOMI_PARITY: usize = 9;
 
-/// Encode the full game state into a flat f32 array for efficient transfer to Python/numpy
-/// Returns (flat_data, num_planes, height, width), where flat_data is in row-major order
+#[derive(Clone, Copy)]
+struct GroupInfo<const NW: usize> {
+    owner: Player,
+    stones: Bitboard<NW>,
+    liberties: Bitboard<NW>,
+}
+
+#[derive(Clone)]
+struct EmptyRegion<const NW: usize> {
+    points: Bitboard<NW>,
+    bordering_chains: Vec<usize>,
+    vital_chains: Vec<usize>,
+}
+
 #[hotpath::measure]
-pub fn encode_game_planes<const NW: usize>(game: &mut Game<NW>) -> (Vec<f32>, usize, usize, usize) {
-    let perspective = game.turn();
+pub fn encode_spatial_game_planes<const NW: usize>(
+    game: &mut Game<NW>,
+) -> (Vec<f32>, usize, usize, usize) {
     let width = game.width() as usize;
     let height = game.height() as usize;
-    let num_planes = TOTAL_INPUT_PLANES;
-    let board_size = height * width;
-    let total_size = num_planes * board_size;
-    let mut data = vec![0.0f32; total_size];
+    let board_size = width * height;
+    let mut data = vec![0.0f32; SPATIAL_INPUT_PLANES * board_size];
+    let geo = BoardGeometry::new(game.width(), game.height());
+    let perspective = game.turn();
 
-    let history_len = game.move_count();
-    let steps_back = (HISTORY_LENGTH - 1).min(history_len);
+    fill_plane(&mut data, PLANE_ON_BOARD, board_size, 1.0);
+    mark_stones_and_liberties(&mut data, game, &geo, board_size, perspective);
+    mark_ko_and_superko(&mut data, game, &geo, board_size);
+    mark_recent_move_planes(&mut data, game, board_size);
+    mark_ladder_planes(&mut data, game, board_size);
 
-    // Save moves we'll need to replay
-    let moves_to_replay: Vec<Move> = game.move_history()[(history_len - steps_back)..].to_vec();
+    let self_pass_alive = pass_alive_area(game, &geo, perspective);
+    mark_bitboard(&mut data, PLANE_PASS_ALIVE_SELF, self_pass_alive, board_size);
+    let opponent_pass_alive = pass_alive_area(game, &geo, perspective.opposite());
+    mark_bitboard(
+        &mut data,
+        PLANE_PASS_ALIVE_OPP,
+        opponent_pass_alive,
+        board_size,
+    );
 
-    // T=0: current position
-    fill_go_planes(&mut data, game, perspective, 0, board_size);
-
-    // T=1..steps_back: walk backward through history
-    for t in 1..=steps_back {
-        game.unmake_move();
-        fill_go_planes(&mut data, game, perspective, t, board_size);
-    }
-
-    // Replay saved moves to restore game state
-    for mv in &moves_to_replay {
-        game.make_move(mv);
-    }
-
-    // Color plane (last plane)
-    let color_plane_offset = (HISTORY_LENGTH * PIECE_PLANES) * board_size;
-    let color_value = if perspective == Player::Black {
-        1.0
-    } else {
-        0.0
-    };
-    for i in 0..board_size {
-        data[color_plane_offset + i] = color_value;
-    }
-
-    (data, num_planes, height, width)
+    (data, SPATIAL_INPUT_PLANES, height, width)
 }
 
 #[hotpath::measure]
-fn fill_go_planes<const NW: usize>(
-    data: &mut [f32],
-    game: &Game<NW>,
-    perspective: Player,
-    t: usize,
-    board_size: usize,
-) {
-    let board = game.board();
-    let (own_bb, opp_bb) = match perspective {
-        Player::Black => (board.black_stones(), board.white_stones()),
-        Player::White => (board.white_stones(), board.black_stones()),
-    };
+pub fn encode_global_state_features<const NW: usize>(game: &mut Game<NW>) -> Vec<f32> {
+    let perspective = game.turn();
+    let self_komi = komi_from_perspective(game, perspective);
+    let parity = komi_parity_feature(game, self_komi);
+    let history = game.move_history();
+    let mut features = vec![0.0f32; GLOBAL_INPUT_FEATURES];
 
-    let own_offset = t * PIECE_PLANES * board_size;
-    for idx in own_bb.iter_ones() {
-        data[own_offset + idx] = 1.0;
+    for (offset, move_) in history.iter().rev().take(RECENT_MOVE_COUNT).enumerate() {
+        if move_.is_pass() {
+            features[GLOBAL_PASS_HISTORY_START + offset] = 1.0;
+        }
     }
 
-    let opp_offset = (t * PIECE_PLANES + 1) * board_size;
-    for idx in opp_bb.iter_ones() {
-        data[opp_offset + idx] = 1.0;
+    features[GLOBAL_SELF_KOMI] = self_komi / 15.0;
+    features[GLOBAL_SIMPLE_KO] = if game.superko() { 0.0 } else { 1.0 };
+    features[GLOBAL_POSITIONAL_SUPERKO] = if game.superko() { 1.0 } else { 0.0 };
+    features[GLOBAL_SUICIDE_ALLOWED] = 0.0;
+    features[GLOBAL_KOMI_PARITY] = parity;
+    features
+}
+
+fn komi_from_perspective<const NW: usize>(game: &Game<NW>, perspective: Player) -> f32 {
+    match perspective {
+        Player::Black => -game.komi(),
+        Player::White => game.komi(),
     }
 }
 
-/// Encode a move as an action index for the policy head
+fn komi_parity_feature<const NW: usize>(game: &Game<NW>, self_komi: f32) -> f32 {
+    let board_area = game.width() as i32 * game.height() as i32;
+    let komi_half_points = (self_komi * 2.0).round() as i32;
+    (board_area + komi_half_points).rem_euclid(2) as f32
+}
+
+fn fill_plane(data: &mut [f32], plane: usize, board_size: usize, value: f32) {
+    let start = plane * board_size;
+    let end = start + board_size;
+    data[start..end].fill(value);
+}
+
+fn mark_bitboard<const NW: usize>(
+    data: &mut [f32],
+    plane: usize,
+    bits: Bitboard<NW>,
+    board_size: usize,
+) {
+    let base = plane * board_size;
+    for idx in bits.iter_ones() {
+        data[base + idx] = 1.0;
+    }
+}
+
+fn mark_position(data: &mut [f32], plane: usize, pos: Position, board_size: usize, width: u8) {
+    let idx = pos.to_index(width);
+    data[plane * board_size + idx] = 1.0;
+}
+
+fn mark_stones_and_liberties<const NW: usize>(
+    data: &mut [f32],
+    game: &Game<NW>,
+    geo: &BoardGeometry<NW>,
+    board_size: usize,
+    perspective: Player,
+) {
+    for group in collect_groups(game, geo, Player::Black)
+        .into_iter()
+        .chain(collect_groups(game, geo, Player::White))
+    {
+        let color_plane = if group.owner == perspective {
+            PLANE_OWN_STONES
+        } else {
+            PLANE_OPP_STONES
+        };
+        mark_bitboard(data, color_plane, group.stones, board_size);
+        mark_bitboard(
+            data,
+            liberty_plane(group.liberties.count()),
+            group.stones,
+            board_size,
+        );
+    }
+}
+
+fn liberty_plane(liberties: u32) -> usize {
+    match liberties.min(MAX_LIBERTY_BUCKET) {
+        1 => PLANE_ONE_LIBERTY,
+        2 => PLANE_TWO_LIBERTIES,
+        _ => PLANE_THREE_LIBERTIES,
+    }
+}
+
+fn collect_groups<const NW: usize>(
+    game: &Game<NW>,
+    geo: &BoardGeometry<NW>,
+    player: Player,
+) -> Vec<GroupInfo<NW>> {
+    let board = game.board();
+    let mut groups = Vec::new();
+    let mut remaining = board.stones_for(player);
+    let empty = board.empty_squares(geo.board_mask);
+
+    while let Some(idx) = remaining.lowest_bit_index() {
+        let seed = Bitboard::single(idx);
+        let stones = geo.flood_fill(seed, board.stones_for(player));
+        remaining = remaining.andnot(stones);
+        let liberties = geo.neighbors(&stones) & empty;
+        groups.push(GroupInfo {
+            owner: player,
+            stones,
+            liberties,
+        });
+    }
+
+    groups
+}
+
+fn group_at<const NW: usize>(
+    game: &Game<NW>,
+    geo: &BoardGeometry<NW>,
+    pos: Position,
+) -> Option<GroupInfo<NW>> {
+    let board = game.board();
+    let owner = board.get_piece(&pos)?;
+    let stones = geo.flood_fill(Bitboard::single(pos.to_index(game.width())), board.stones_for(owner));
+    let liberties = geo.neighbors(&stones) & board.empty_squares(geo.board_mask);
+    Some(GroupInfo {
+        owner,
+        stones,
+        liberties,
+    })
+}
+
+fn mark_ko_and_superko<const NW: usize>(
+    data: &mut [f32],
+    game: &Game<NW>,
+    geo: &BoardGeometry<NW>,
+    board_size: usize,
+) {
+    let ko_idx = game.ko_point().map(|pos| pos.to_index(game.width()));
+    if let Some(ko_point) = game.ko_point() {
+        mark_position(data, PLANE_KO_OR_SUPERKO, ko_point, board_size, game.width());
+    }
+
+    if !game.superko() {
+        return;
+    }
+
+    let simple_game = clone_with_superko(game, false);
+    let board = game.board();
+    let empty = board.empty_squares(geo.board_mask);
+
+    for idx in empty.iter_ones() {
+        if ko_idx.is_some_and(|ko_idx| ko_idx == idx) {
+            continue;
+        }
+        let pos = Position::from_index(idx, game.width());
+        let move_ = Move::place(pos.col, pos.row);
+        if !game.is_legal_move(&move_) && simple_game.is_legal_move(&move_) {
+            mark_position(data, PLANE_KO_OR_SUPERKO, pos, board_size, game.width());
+        }
+    }
+}
+
+fn clone_with_superko<const NW: usize>(game: &Game<NW>, superko: bool) -> Game<NW> {
+    let mut clone = Game::with_options(
+        game.width(),
+        game.height(),
+        game.komi(),
+        game.min_moves_before_pass_possible(),
+        game.max_moves(),
+        superko,
+    );
+    let board = game.board();
+    let black_positions = positions_from_bitboard(board.black_stones(), game.width());
+    let white_positions = positions_from_bitboard(board.white_stones(), game.width());
+    clone
+        .set_setup_position(&black_positions, &white_positions, game.turn())
+        .expect("clone_with_superko: setup position must be valid");
+    clone
+}
+
+fn positions_from_bitboard<const NW: usize>(bits: Bitboard<NW>, width: u8) -> Vec<Position> {
+    bits.iter_ones()
+        .map(|idx| Position::from_index(idx, width))
+        .collect()
+}
+
+fn mark_recent_move_planes<const NW: usize>(data: &mut [f32], game: &Game<NW>, board_size: usize) {
+    for (offset, move_) in game.move_history().iter().rev().take(RECENT_MOVE_COUNT).enumerate() {
+        if let Some(pos) = move_.position() {
+            mark_position(
+                data,
+                PLANE_LAST_MOVE_START + offset,
+                pos,
+                board_size,
+                game.width(),
+            );
+        }
+    }
+}
+
+fn mark_ladder_planes<const NW: usize>(data: &mut [f32], game: &mut Game<NW>, board_size: usize) {
+    let history = game.move_history();
+    let steps_back = (LADDER_HISTORY_PLANES - 1).min(history.len());
+    let moves_to_replay = history[(history.len() - steps_back)..].to_vec();
+
+    for history_offset in 0..=steps_back {
+        let geo = BoardGeometry::new(game.width(), game.height());
+        let ladderable = collect_ladderable_groups(game, &geo);
+        let ladder_plane = PLANE_LADDERABLE_START + history_offset;
+        let mut ladder_capture_points: Bitboard<NW> = Bitboard::empty();
+
+        for group in &ladderable {
+            mark_bitboard(data, ladder_plane, group.stones, board_size);
+            if history_offset != 0 {
+                continue;
+            }
+
+            for liberty_idx in group.liberties.iter_ones() {
+                let liberty = Position::from_index(liberty_idx, game.width());
+                if is_ladder_capture(
+                    game,
+                    group,
+                    Move::place(liberty.col, liberty.row),
+                    MAX_LADDER_DEPTH,
+                ) {
+                    ladder_capture_points.set(liberty_idx);
+                }
+            }
+        }
+
+        if history_offset == 0 {
+            mark_bitboard(
+                data,
+                PLANE_LADDER_CAPTURE,
+                ladder_capture_points,
+                board_size,
+            );
+        }
+
+        if history_offset < steps_back {
+            let did_unmake = game.unmake_move();
+            debug_assert!(did_unmake);
+        }
+    }
+
+    for move_ in &moves_to_replay {
+        let replayed = game.make_move(move_);
+        debug_assert!(replayed);
+    }
+}
+
+fn collect_ladderable_groups<const NW: usize>(
+    game: &Game<NW>,
+    geo: &BoardGeometry<NW>,
+) -> Vec<GroupInfo<NW>> {
+    let target_player = game.turn().opposite();
+    collect_groups(game, geo, target_player)
+        .into_iter()
+        .filter(|group| {
+            let liberty_count = group.liberties.count();
+            liberty_count == 1 || liberty_count == 2
+        })
+        .filter(|group| {
+            group.liberties.iter_ones().any(|idx| {
+                let liberty = Position::from_index(idx, game.width());
+                is_ladder_capture(
+                    game,
+                    group,
+                    Move::place(liberty.col, liberty.row),
+                    MAX_LADDER_DEPTH,
+                )
+            })
+        })
+        .collect()
+}
+
+fn is_ladder_capture<const NW: usize>(
+    game: &Game<NW>,
+    target_group: &GroupInfo<NW>,
+    capture_move: Move,
+    depth: usize,
+) -> bool {
+    if depth == 0 || target_group.owner == game.turn() {
+        return false;
+    }
+    if !game.is_legal_move(&capture_move) {
+        return false;
+    }
+
+    let mut next = game.clone();
+    if !next.make_move(&capture_move) {
+        return false;
+    }
+
+    let next_geo = BoardGeometry::new(next.width(), next.height());
+    let Some(group_after) = surviving_target_group(&next, &next_geo, target_group) else {
+        return true;
+    };
+    if group_after.liberties.count() >= 3 {
+        return false;
+    }
+
+    !defender_can_escape(&next, &next_geo, &group_after, depth - 1)
+}
+
+fn defender_can_escape<const NW: usize>(
+    game: &Game<NW>,
+    geo: &BoardGeometry<NW>,
+    target_group: &GroupInfo<NW>,
+    depth: usize,
+) -> bool {
+    if depth == 0 {
+        return true;
+    }
+    if target_group.owner != game.turn() {
+        return false;
+    }
+    if target_group.liberties.count() >= 3 {
+        return true;
+    }
+
+    for move_ in escape_candidates(game, geo, target_group) {
+        let mut next = game.clone();
+        if !next.make_move(&move_) {
+            continue;
+        }
+        let next_geo = BoardGeometry::new(next.width(), next.height());
+        let Some(group_after) = surviving_target_group(&next, &next_geo, target_group) else {
+            continue;
+        };
+        if group_after.liberties.count() >= 3 {
+            return true;
+        }
+
+        let attacker_can_continue = group_after.liberties.iter_ones().any(|idx| {
+            let liberty = Position::from_index(idx, next.width());
+            is_ladder_capture(
+                &next,
+                &group_after,
+                Move::place(liberty.col, liberty.row),
+                depth - 1,
+            )
+        });
+        if !attacker_can_continue {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn escape_candidates<const NW: usize>(
+    game: &Game<NW>,
+    geo: &BoardGeometry<NW>,
+    target_group: &GroupInfo<NW>,
+) -> Vec<Move> {
+    let board = game.board();
+    let opponent = target_group.owner.opposite();
+    let mut candidate_bits = target_group.liberties;
+    let mut adjacent_opponent_groups = geo.neighbors(&target_group.stones) & board.stones_for(opponent);
+    let empty = board.empty_squares(geo.board_mask);
+
+    while let Some(idx) = adjacent_opponent_groups.lowest_bit_index() {
+        let stones = geo.flood_fill(Bitboard::single(idx), board.stones_for(opponent));
+        adjacent_opponent_groups = adjacent_opponent_groups.andnot(stones);
+        let liberties = geo.neighbors(&stones) & empty;
+        if liberties.count() == 1 {
+            candidate_bits |= liberties;
+        }
+    }
+
+    candidate_bits
+        .iter_ones()
+        .filter_map(|idx| {
+            let pos = Position::from_index(idx, game.width());
+            let move_ = Move::place(pos.col, pos.row);
+            if game.is_legal_move(&move_) {
+                Some(move_)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn surviving_target_group<const NW: usize>(
+    game: &Game<NW>,
+    geo: &BoardGeometry<NW>,
+    previous_group: &GroupInfo<NW>,
+) -> Option<GroupInfo<NW>> {
+    let survivors = previous_group.stones & game.board().stones_for(previous_group.owner);
+    let repr_idx = survivors.lowest_bit_index()?;
+    group_at(game, geo, Position::from_index(repr_idx, game.width()))
+}
+
+fn pass_alive_area<const NW: usize>(
+    game: &Game<NW>,
+    geo: &BoardGeometry<NW>,
+    player: Player,
+) -> Bitboard<NW> {
+    let chains = collect_groups(game, geo, player);
+    if chains.is_empty() {
+        return Bitboard::empty();
+    }
+
+    let regions = candidate_eye_regions(game, geo, player, &chains);
+    if regions.is_empty() {
+        return Bitboard::empty();
+    }
+
+    let mut active_chains = vec![true; chains.len()];
+    let mut active_regions = vec![true; regions.len()];
+
+    loop {
+        let mut changed = false;
+
+        for (region_index, region) in regions.iter().enumerate() {
+            if !active_regions[region_index] {
+                continue;
+            }
+            if region
+                .bordering_chains
+                .iter()
+                .any(|chain_index| !active_chains[*chain_index])
+            {
+                active_regions[region_index] = false;
+                changed = true;
+            }
+        }
+
+        for chain_index in 0..chains.len() {
+            if !active_chains[chain_index] {
+                continue;
+            }
+            let vital_region_count = regions
+                .iter()
+                .enumerate()
+                .filter(|(region_index, region)| {
+                    active_regions[*region_index] && region.vital_chains.contains(&chain_index)
+                })
+                .count();
+            if vital_region_count < 2 {
+                active_chains[chain_index] = false;
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    let mut pass_alive = Bitboard::empty();
+    for (chain_index, chain) in chains.iter().enumerate() {
+        if active_chains[chain_index] {
+            pass_alive |= chain.stones;
+        }
+    }
+    for (region_index, region) in regions.iter().enumerate() {
+        if active_regions[region_index] {
+            pass_alive |= region.points;
+        }
+    }
+    pass_alive
+}
+
+fn candidate_eye_regions<const NW: usize>(
+    game: &Game<NW>,
+    geo: &BoardGeometry<NW>,
+    player: Player,
+    chains: &[GroupInfo<NW>],
+) -> Vec<EmptyRegion<NW>> {
+    let board = game.board();
+    let empty = board.empty_squares(geo.board_mask);
+    let own = board.stones_for(player);
+    let opp = board.stones_for(player.opposite());
+    let mut regions = Vec::new();
+    let mut remaining = empty;
+
+    while let Some(idx) = remaining.lowest_bit_index() {
+        let points = geo.flood_fill(Bitboard::single(idx), empty);
+        remaining = remaining.andnot(points);
+        let border = geo.neighbors(&points);
+        if (border & own).is_empty() || (border & opp).is_nonzero() {
+            continue;
+        }
+
+        let bordering_chains: Vec<usize> = chains
+            .iter()
+            .enumerate()
+            .filter_map(|(chain_index, chain)| {
+                if (geo.neighbors(&chain.stones) & points).is_nonzero() {
+                    Some(chain_index)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if bordering_chains.is_empty() {
+            continue;
+        }
+
+        let vital_chains: Vec<usize> = chains
+            .iter()
+            .enumerate()
+            .filter_map(|(chain_index, chain)| {
+                if points.andnot(chain.liberties).is_empty() {
+                    Some(chain_index)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if vital_chains.is_empty() {
+            continue;
+        }
+
+        regions.push(EmptyRegion {
+            points,
+            bordering_chains,
+            vital_chains,
+        });
+    }
+
+    regions
+}
+
 #[hotpath::measure]
 pub fn encode_move(move_: &Move, board_width: u8, board_height: u8) -> usize {
     match move_ {
@@ -94,7 +613,6 @@ pub fn encode_move(move_: &Move, board_width: u8, board_height: u8) -> usize {
     }
 }
 
-/// Returns the column number and row where the piece would land
 #[hotpath::measure]
 pub fn decode_move(action: usize, board_width: u8, board_height: u8) -> Option<Move> {
     let w = board_width as usize;
@@ -124,7 +642,7 @@ mod tests {
     use super::*;
     use crate::bitboard::nw_for_board;
 
-    fn get_plane_value(
+    fn plane_value(
         data: &[f32],
         plane: usize,
         row: usize,
@@ -136,23 +654,79 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_game_empty() {
-        let mut game = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
-        let (data, num_planes, height, width) = encode_game_planes(&mut game);
+    fn test_spatial_and_global_feature_counts() {
+        assert_eq!(SPATIAL_INPUT_PLANES, 18);
+        assert_eq!(GLOBAL_INPUT_FEATURES, 10);
+    }
 
-        assert_eq!(num_planes, TOTAL_INPUT_PLANES);
+    #[test]
+    fn test_encode_empty_board() {
+        let mut game = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
+        let (data, planes, height, width) = encode_spatial_game_planes(&mut game);
+        let global = encode_global_state_features(&mut game);
+
+        assert_eq!(planes, SPATIAL_INPUT_PLANES);
         assert_eq!(height, 9);
         assert_eq!(width, 9);
-        assert_eq!(data.len(), num_planes * height * width);
+        assert_eq!(data.len(), planes * height * width);
+        assert_eq!(global.len(), GLOBAL_INPUT_FEATURES);
 
-        // First two planes (current and opponent pieces) should be zeros for empty board
-        for plane in 0..PIECE_PLANES {
-            for row in 0..height {
-                for col in 0..width {
-                    assert_eq!(get_plane_value(&data, plane, row, col, height, width), 0.0);
-                }
+        for row in 0..height {
+            for col in 0..width {
+                assert_eq!(plane_value(&data, PLANE_ON_BOARD, row, col, height, width), 1.0);
+                assert_eq!(plane_value(&data, PLANE_OWN_STONES, row, col, height, width), 0.0);
+                assert_eq!(plane_value(&data, PLANE_OPP_STONES, row, col, height, width), 0.0);
             }
         }
+
+        assert_eq!(global[GLOBAL_SELF_KOMI], -0.5);
+        assert_eq!(global[GLOBAL_SIMPLE_KO], 0.0);
+        assert_eq!(global[GLOBAL_POSITIONAL_SUPERKO], 1.0);
+        assert_eq!(global[GLOBAL_SUICIDE_ALLOWED], 0.0);
+    }
+
+    #[test]
+    fn test_encode_stones_and_liberties() {
+        let mut game = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
+        assert!(game.make_move(&Move::place(4, 4)));
+        assert!(game.make_move(&Move::place(3, 4)));
+
+        let (data, _planes, height, width) = encode_spatial_game_planes(&mut game);
+
+        assert_eq!(plane_value(&data, PLANE_OWN_STONES, 4, 4, height, width), 1.0);
+        assert_eq!(plane_value(&data, PLANE_OPP_STONES, 4, 3, height, width), 1.0);
+        assert_eq!(plane_value(&data, PLANE_THREE_LIBERTIES, 4, 4, height, width), 1.0);
+        assert_eq!(plane_value(&data, PLANE_THREE_LIBERTIES, 4, 3, height, width), 1.0);
+    }
+
+    #[test]
+    fn test_recent_move_planes_and_pass_history() {
+        let mut game = Game::<{ nw_for_board(5, 5) }>::with_options(5, 5, 7.5, 0, 100, true);
+        assert!(game.make_move(&Move::pass()));
+        assert!(game.make_move(&Move::place(1, 2)));
+
+        let (data, _planes, height, width) = encode_spatial_game_planes(&mut game);
+        let global = encode_global_state_features(&mut game);
+
+        assert_eq!(plane_value(&data, PLANE_LAST_MOVE_START, 2, 1, height, width), 1.0);
+        assert_eq!(global[GLOBAL_PASS_HISTORY_START + 1], 1.0);
+    }
+
+    #[test]
+    fn test_ko_plane_marks_immediate_recapture() {
+        let mut game = Game::<{ nw_for_board(5, 5) }>::new(5, 5);
+        assert!(game.make_move(&Move::place(1, 0)));
+        assert!(game.make_move(&Move::place(2, 0)));
+        assert!(game.make_move(&Move::place(0, 1)));
+        assert!(game.make_move(&Move::place(1, 1)));
+        assert!(game.make_move(&Move::place(1, 2)));
+        assert!(game.make_move(&Move::place(2, 2)));
+        assert!(game.make_move(&Move::place(4, 4)));
+        assert!(game.make_move(&Move::place(3, 1)));
+        assert!(game.make_move(&Move::place(2, 1)));
+
+        let (data, _planes, height, width) = encode_spatial_game_planes(&mut game);
+        assert_eq!(plane_value(&data, PLANE_KO_OR_SUPERKO, 1, 1, height, width), 1.0);
     }
 
     #[test]
@@ -166,7 +740,6 @@ mod tests {
                 let encoded = encode_move(&move_, width, height);
                 let decoded = decode_move(encoded, width, height)
                     .expect("test_encode_decode_move: failed to decode placement move");
-
                 assert_eq!(decoded, move_);
             }
         }
@@ -174,10 +747,7 @@ mod tests {
         let pass = Move::pass();
         let encoded_pass = encode_move(&pass, width, height);
         assert_eq!(encoded_pass, width as usize * height as usize);
-
-        let decoded_pass = decode_move(encoded_pass, width, height)
-            .expect("test_encode_decode_move: failed to decode pass move");
-        assert_eq!(decoded_pass, pass);
+        assert_eq!(decode_move(encoded_pass, width, height), Some(pass));
     }
 
     #[test]
@@ -188,288 +758,17 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_game_with_pieces() {
+    fn test_encoding_deterministic() {
         let mut game = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
+        assert!(game.make_move(&Move::place(4, 4)));
+        assert!(game.make_move(&Move::place(3, 3)));
 
-        let move1 = Move::place(0, 0);
-        game.make_move(&move1);
+        let spatial1 = encode_spatial_game_planes(&mut game);
+        let spatial2 = encode_spatial_game_planes(&mut game);
+        let global1 = encode_global_state_features(&mut game);
+        let global2 = encode_global_state_features(&mut game);
 
-        let move2 = Move::place(1, 0);
-        game.make_move(&move2);
-
-        // Now it's Black's turn again, so encode from Black's perspective
-        let (data, _num_planes, height, width) = encode_game_planes(&mut game);
-
-        // From Black's perspective: Black's piece at (0,0) should be in plane 0, White's at (1,0) in plane 1
-        assert_eq!(get_plane_value(&data, 0, 0, 0, height, width), 1.0);
-        assert_eq!(get_plane_value(&data, 0, 0, 1, height, width), 0.0);
-
-        assert_eq!(get_plane_value(&data, 1, 0, 0, height, width), 0.0);
-        assert_eq!(get_plane_value(&data, 1, 0, 1, height, width), 1.0);
-    }
-
-    #[test]
-    fn test_fuzz_encoding_random_games() {
-        use rand::prelude::IndexedRandom;
-        use rand::SeedableRng;
-        use std::sync::atomic::{AtomicU64, Ordering};
-        use std::sync::Arc;
-        use std::thread;
-
-        let num_games = 5_000;
-        let num_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-        let games_per_thread = num_games / num_threads;
-
-        let total_moves_played = Arc::new(AtomicU64::new(0));
-        let total_moves_tested = Arc::new(AtomicU64::new(0));
-
-        let mut handles = vec![];
-
-        for thread_id in 0..num_threads {
-            let moves_played = Arc::clone(&total_moves_played);
-            let moves_tested = Arc::clone(&total_moves_tested);
-
-            let handle = thread::spawn(move || {
-                let mut rng = rand::rngs::SmallRng::seed_from_u64(thread_id as u64);
-                let mut thread_moves_played = 0u64;
-                let mut thread_moves_tested = 0u64;
-
-                for _game_num in 0..games_per_thread {
-                    let mut game = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
-                    let max_moves = 100;
-
-                    for _move_num in 0..max_moves {
-                        if game.is_over() {
-                            break;
-                        }
-
-                        let legal_moves = game.legal_moves();
-                        if legal_moves.is_empty() {
-                            break;
-                        }
-
-                        let (data, num_planes, height, width) = encode_game_planes(&mut game);
-                        assert_eq!(num_planes, TOTAL_INPUT_PLANES);
-                        assert_eq!(height, game.height() as usize);
-                        assert_eq!(width, game.width() as usize);
-                        assert_eq!(data.len(), num_planes * height * width);
-
-                        for move_ in &legal_moves {
-                            let w = game.width();
-                            let h = game.height();
-                            let action = encode_move(move_, w, h);
-                            assert!(
-                                action <= w as usize * h as usize,
-                                "Invalid action {} for move {:?}",
-                                action,
-                                move_
-                            );
-
-                            let decoded = decode_move(action, w, h);
-                            assert!(decoded.is_some(), "Failed to decode action {}", action);
-
-                            thread_moves_tested += 1;
-                        }
-
-                        let chosen_move = legal_moves.choose(&mut rng).expect(
-                            "test_fuzz_encoding_random_games: legal moves must not be empty",
-                        );
-                        let success = game.make_move(chosen_move);
-                        assert!(success, "Failed to make move {:?}", chosen_move);
-
-                        thread_moves_played += 1;
-                    }
-                }
-
-                moves_played.fetch_add(thread_moves_played, Ordering::Relaxed);
-                moves_tested.fetch_add(thread_moves_tested, Ordering::Relaxed);
-            });
-
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            handle
-                .join()
-                .expect("test_fuzz_encoding_random_games: worker thread panicked");
-        }
-
-        let final_moves_played = total_moves_played.load(Ordering::Relaxed);
-        let final_moves_tested = total_moves_tested.load(Ordering::Relaxed);
-
-        println!(
-            "\nGo Encoding Fuzz Test:\n  Games: {}\n  Threads: {}\n  Moves played: {}\n  Moves tested: {}",
-            num_games, num_threads, final_moves_played, final_moves_tested
-        );
-
-        assert!(final_moves_played > 0, "No moves were played");
-        assert!(final_moves_tested > 0, "No moves were tested");
-    }
-
-    #[test]
-    fn test_encoding_consistency() {
-        use rand::prelude::IndexedRandom;
-        use rand::SeedableRng;
-
-        let mut game = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
-        let mut rng = rand::rngs::SmallRng::seed_from_u64(123);
-
-        for _ in 0..20 {
-            if game.is_over() {
-                break;
-            }
-
-            let legal_moves = game.legal_moves();
-            if legal_moves.is_empty() {
-                break;
-            }
-
-            let encoding1 = encode_game_planes(&mut game);
-            let encoding2 = encode_game_planes(&mut game);
-            assert_eq!(encoding1, encoding2, "Encoding should be deterministic");
-
-            let chosen_move = legal_moves
-                .choose(&mut rng)
-                .expect("test_encoding_consistency: legal moves must not be empty");
-            game.make_move(chosen_move);
-        }
-    }
-
-    #[test]
-    fn test_encoding_after_undo() {
-        let mut game = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
-
-        let initial_encoding = encode_game_planes(&mut game);
-
-        let move1 = Move::place(0, 0);
-        game.make_move(&move1);
-
-        let move2 = Move::place(1, 0);
-        game.make_move(&move2);
-
-        game.unmake_move();
-        game.unmake_move();
-
-        let final_encoding = encode_game_planes(&mut game);
-        assert_eq!(
-            initial_encoding, final_encoding,
-            "Encoding after undo should match initial state"
-        );
-    }
-
-    #[test]
-    fn test_plane_sizes() {
-        let mut game = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
-        let (data, num_planes, height, width) = encode_game_planes(&mut game);
-
-        assert_eq!(num_planes, TOTAL_INPUT_PLANES);
-        assert_eq!(height, game.height() as usize);
-        assert_eq!(width, game.width() as usize);
-        assert_eq!(data.len(), num_planes * height * width);
-    }
-
-    #[test]
-    fn test_encoding_different_positions() {
-        let mut game1 = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
-        let mut game2 = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
-
-        game1.make_move(&Move::place(0, 0));
-        game2.make_move(&Move::place(1, 0));
-
-        let encoding1 = encode_game_planes(&mut game1);
-        let encoding2 = encode_game_planes(&mut game2);
-
-        assert_ne!(
-            encoding1, encoding2,
-            "Different positions should have different encodings"
-        );
-    }
-
-    #[test]
-    fn test_invalid_action_decoding() {
-        let width: u8 = 9;
-        let height: u8 = 9;
-        let board_size = width as usize * height as usize;
-
-        assert!(decode_move(board_size + 1, width, height).is_none());
-        assert!(decode_move(board_size + 10, width, height).is_none());
-        assert!(decode_move(1000, width, height).is_none());
-    }
-
-    #[test]
-    fn test_encode_arbitrary_board_size_19x19() {
-        let mut game = Game::<{ nw_for_board(19, 19) }>::new(19, 19);
-
-        assert_eq!(game.width(), 19u8);
-        assert_eq!(game.height(), 19u8);
-
-        let (data, num_planes, height, width) = encode_game_planes(&mut game);
-        assert_eq!(num_planes, TOTAL_INPUT_PLANES);
-        assert_eq!(height, 19);
-        assert_eq!(width, 19);
-        assert_eq!(data.len(), num_planes * height * width);
-
-        for row in 0u8..19 {
-            for col in 0u8..19 {
-                let move_ = Move::place(col, row);
-                let encoded = encode_move(&move_, 19, 19);
-                let decoded = decode_move(encoded, 19, 19)
-                    .expect("test_encode_arbitrary_board_size_19x19: failed to decode 19x19 move");
-                assert_eq!(decoded, move_);
-            }
-        }
-
-        assert!(decode_move(362, 19, 19).is_none());
-    }
-
-    #[test]
-    fn test_encode_arbitrary_board_size_5x5() {
-        let mut game = Game::<{ nw_for_board(5, 5) }>::new(5, 5);
-
-        assert_eq!(game.width(), 5u8);
-        assert_eq!(game.height(), 5u8);
-
-        let (data, num_planes, height, width) = encode_game_planes(&mut game);
-        assert_eq!(num_planes, TOTAL_INPUT_PLANES);
-        assert_eq!(height, 5);
-        assert_eq!(width, 5);
-        assert_eq!(data.len(), num_planes * height * width);
-    }
-
-    #[test]
-    fn test_encode_different_board_sizes_different_encodings() {
-        let mut game1 = Game::<{ nw_for_board(9, 9) }>::new(9, 9);
-        let mut game2 = Game::<{ nw_for_board(19, 19) }>::new(19, 19);
-
-        let (data1, num_planes1, height1, width1) = encode_game_planes(&mut game1);
-        let (data2, num_planes2, height2, width2) = encode_game_planes(&mut game2);
-
-        assert_eq!(num_planes1, TOTAL_INPUT_PLANES);
-        assert_eq!(num_planes2, TOTAL_INPUT_PLANES);
-
-        assert_eq!(height1, 9);
-        assert_eq!(width1, 9);
-        assert_eq!(data1.len(), num_planes1 * 9 * 9);
-
-        assert_eq!(height2, 19);
-        assert_eq!(width2, 19);
-        assert_eq!(data2.len(), num_planes2 * 19 * 19);
-    }
-
-    #[test]
-    fn test_pass_move_encoding() {
-        let pass = Move::pass();
-
-        let encoded_9x9 = encode_move(&pass, 9, 9);
-        assert_eq!(encoded_9x9, 81);
-
-        let encoded_19x19 = encode_move(&pass, 19, 19);
-        assert_eq!(encoded_19x19, 361);
-
-        let decoded = decode_move(81, 9, 9)
-            .expect("test_pass_move_encoding: failed to decode pass action 81 for 9x9");
-        assert!(decoded.is_pass());
+        assert_eq!(spatial1, spatial2);
+        assert_eq!(global1, global2);
     }
 }

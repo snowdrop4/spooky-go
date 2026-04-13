@@ -3,7 +3,7 @@ use rand::prelude::IndexedRandom;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use spooky_go::bitboard::nw_for_board;
-use spooky_go::encode::encode_game_planes;
+use spooky_go::encode::{encode_global_state_features, encode_spatial_game_planes};
 use spooky_go::game::Game;
 use std::hint::black_box;
 
@@ -85,23 +85,33 @@ fn bench_make_unmake(c: &mut Criterion) {
     });
 }
 
-fn bench_encode_game_planes_9x9(c: &mut Criterion) {
+fn bench_encode_state_9x9(c: &mut Criterion) {
     let game = setup_midgame::<{ nw_for_board(9, 9) }>(9, 9);
-    c.bench_function("encode_game_planes_9x9", |b| {
+    c.bench_function("encode_state_9x9", |b| {
         b.iter_batched(
             || game.clone(),
-            |mut g| black_box(encode_game_planes(&mut g)),
+            |mut g| {
+                black_box((
+                    encode_spatial_game_planes(&mut g),
+                    encode_global_state_features(&mut g),
+                ))
+            },
             criterion::BatchSize::SmallInput,
         )
     });
 }
 
-fn bench_encode_game_planes_19x19(c: &mut Criterion) {
+fn bench_encode_state_19x19(c: &mut Criterion) {
     let game = setup_midgame::<{ nw_for_board(19, 19) }>(19, 19);
-    c.bench_function("encode_game_planes_19x19", |b| {
+    c.bench_function("encode_state_19x19", |b| {
         b.iter_batched(
             || game.clone(),
-            |mut g| black_box(encode_game_planes(&mut g)),
+            |mut g| {
+                black_box((
+                    encode_spatial_game_planes(&mut g),
+                    encode_global_state_features(&mut g),
+                ))
+            },
             criterion::BatchSize::SmallInput,
         )
     });
@@ -157,7 +167,10 @@ fn bench_self_play_step(c: &mut Criterion) {
             || game.clone(),
             |mut g| {
                 let moves = g.legal_moves();
-                let _planes = encode_game_planes(&mut g);
+                // Self-play consumes both tensors, so benchmark the split encoder
+                // the same way the caller actually uses it.
+                let _spatial = encode_spatial_game_planes(&mut g);
+                let _global = encode_global_state_features(&mut g);
                 // Pick the first legal placement (simulating a policy choice)
                 let mv = moves
                     .iter()
@@ -180,8 +193,8 @@ criterion_group!(
         bench_legal_moves_19x19,
         bench_make_move,
         bench_make_unmake,
-        bench_encode_game_planes_9x9,
-        bench_encode_game_planes_19x19,
+        bench_encode_state_9x9,
+        bench_encode_state_19x19,
         bench_outcome,
         bench_self_play_step,
 );
