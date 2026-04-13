@@ -25,6 +25,45 @@ struct MoveHistoryEntry<const NW: usize> {
     previous_ko_point: Option<Position>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetupError {
+    PositionOutOfBounds(Position),
+    PositionRepeated(Position),
+    StoneGroupWithoutLiberties(Position),
+}
+
+fn format_position(pos: &Position) -> String {
+    format!("({}, {})", pos.col, pos.row)
+}
+
+impl std::fmt::Display for SetupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PositionOutOfBounds(pos) => {
+                write!(
+                    f,
+                    "setup position {} is out of bounds",
+                    format_position(pos)
+                )
+            }
+            Self::PositionRepeated(pos) => {
+                write!(
+                    f,
+                    "setup position {} was listed more than once",
+                    format_position(pos)
+                )
+            }
+            Self::StoneGroupWithoutLiberties(pos) => write!(
+                f,
+                "setup stone group containing {} has no liberties",
+                format_position(pos)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SetupError {}
+
 const STATE_HASH_HISTORY_LENGTH: usize = HISTORY_LENGTH - 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -425,6 +464,23 @@ impl<const NW: usize> Game<NW> {
         }
     }
 
+    fn first_group_without_liberties(&self, player: Player) -> Option<Position> {
+        let mut remaining = self.board.stones_for(player);
+        let empty = self.board.empty_squares(self.geo.board_mask);
+        while let Some(group_idx) = remaining.lowest_bit_index() {
+            let seed = Bitboard::single(group_idx);
+            let group = self.geo.flood_fill(seed, self.board.stones_for(player));
+            remaining &= !group;
+
+            let liberties = self.geo.neighbors(&group) & empty;
+            if liberties.is_empty() {
+                return Some(Position::from_index(group_idx, self.board.width()));
+            }
+        }
+
+        None
+    }
+
     pub fn score(&self) -> (f32, f32) {
         let mut black_score = self.board.black_stones().count() as f32;
         let mut white_score = self.board.white_stones().count() as f32 + self.komi;
@@ -729,6 +785,58 @@ impl<const NW: usize> Game<NW> {
         } else {
             false
         }
+    }
+
+    pub fn set_setup_position(
+        &mut self,
+        black_positions: &[Position],
+        white_positions: &[Position],
+        current_player: Player,
+    ) -> Result<(), SetupError> {
+        self.board.clear();
+
+        for pos in black_positions {
+            if !pos.is_valid(self.board.width(), self.board.height()) {
+                return Err(SetupError::PositionOutOfBounds(*pos));
+            }
+            if self.board.get_piece(pos).is_some() {
+                return Err(SetupError::PositionRepeated(*pos));
+            }
+            self.board.set_piece(pos, Some(Player::Black));
+        }
+
+        for pos in white_positions {
+            if !pos.is_valid(self.board.width(), self.board.height()) {
+                return Err(SetupError::PositionOutOfBounds(*pos));
+            }
+            if self.board.get_piece(pos).is_some() {
+                return Err(SetupError::PositionRepeated(*pos));
+            }
+            self.board.set_piece(pos, Some(Player::White));
+        }
+
+        for player in [Player::Black, Player::White] {
+            if let Some(pos) = self.first_group_without_liberties(player) {
+                return Err(SetupError::StoneGroupWithoutLiberties(pos));
+            }
+        }
+
+        self.current_player = current_player;
+        self.move_history.clear();
+        self.is_over = false;
+        self.outcome = None;
+        self.consecutive_passes = 0;
+        self.ko_point = None;
+
+        if self.superko {
+            let mut hashes = HashSet::new();
+            hashes.insert(compute_position_hash(&self.board, self.current_player));
+            self.position_hashes = Some(hashes);
+        } else {
+            self.position_hashes = None;
+        }
+
+        Ok(())
     }
 }
 
@@ -1090,5 +1198,53 @@ mod tests {
         game.unmake_move();
 
         assert!(game.is_legal_move(&Move::place(2, 1)));
+    }
+
+    #[test]
+    fn test_set_setup_position_resets_to_requested_board() {
+        let mut game =
+            Game::<{ nw_for_board(5, 5) }>::with_options(5, 5, DEFAULT_KOMI, 0, 1000, true);
+
+        game.make_move(&Move::place(0, 0));
+        game.make_move(&Move::place(1, 0));
+
+        game.set_setup_position(
+            &[Position::new(0, 0), Position::new(2, 2)],
+            &[Position::new(4, 4)],
+            Player::White,
+        )
+        .expect("setup position should succeed");
+
+        assert_eq!(game.turn(), Player::White);
+        assert_eq!(game.move_history().len(), 0);
+        assert_eq!(
+            game.get_piece(&Position::new(0, 0)),
+            Some(Player::Black as i8)
+        );
+        assert_eq!(
+            game.get_piece(&Position::new(2, 2)),
+            Some(Player::Black as i8)
+        );
+        assert_eq!(
+            game.get_piece(&Position::new(4, 4)),
+            Some(Player::White as i8)
+        );
+        assert_eq!(game.get_piece(&Position::new(1, 0)), None);
+    }
+
+    #[test]
+    fn test_set_setup_position_rejects_dead_groups() {
+        let mut game =
+            Game::<{ nw_for_board(4, 4) }>::with_options(4, 4, DEFAULT_KOMI, 0, 1000, true);
+
+        let error = game
+            .set_setup_position(
+                &[Position::new(0, 0)],
+                &[Position::new(1, 0), Position::new(0, 1)],
+                Player::Black,
+            )
+            .expect_err("dead setup group should be rejected");
+
+        assert!(matches!(error, SetupError::StoneGroupWithoutLiberties(_)));
     }
 }

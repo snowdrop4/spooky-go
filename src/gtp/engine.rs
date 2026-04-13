@@ -1,6 +1,7 @@
 use crate::dispatch::{make_game_inner_with_options, GameInner};
 use crate::limits::{board_dimension_is_valid, MAX_GTP_BOARD_SIZE, MIN_GTP_BOARD_SIZE};
 use crate::player::Player;
+use crate::position::Position;
 use crate::r#move::Move;
 
 use super::client::GtpClient;
@@ -102,6 +103,44 @@ impl GtpEngine {
     pub fn set_komi(&mut self, komi: f32) -> Result<(), GtpError> {
         self.client.komi(komi)?;
         dispatch_game_mut!(&mut self.game, g => g.set_komi(komi));
+        Ok(())
+    }
+
+    /// Set an arbitrary setup position and leave `current_player` to move.
+    ///
+    /// This uses raw `play` commands so it works with engines that accept
+    /// explicit-color setup through standard GTP. The local mirror is then
+    /// reset to the same board as a fresh position.
+    pub fn set_setup_position(
+        &mut self,
+        black_positions: &[Position],
+        white_positions: &[Position],
+        current_player: Player,
+    ) -> Result<(), GtpError> {
+        self.clear_board()?;
+
+        let mut engine_player_to_move = Player::Black;
+        for pos in black_positions {
+            self.client
+                .play(Player::Black, &Move::place(pos.col, pos.row), self.size)?;
+            engine_player_to_move = Player::White;
+        }
+        for pos in white_positions {
+            self.client
+                .play(Player::White, &Move::place(pos.col, pos.row), self.size)?;
+            engine_player_to_move = Player::Black;
+        }
+
+        if engine_player_to_move != current_player {
+            self.client
+                .play(engine_player_to_move, &Move::pass(), self.size)?;
+        }
+
+        let setup_result = dispatch_game_mut!(&mut self.game, g => {
+            g.set_setup_position(black_positions, white_positions, current_player)
+        });
+        setup_result.map_err(GtpError::InvalidSetup)?;
+
         Ok(())
     }
 

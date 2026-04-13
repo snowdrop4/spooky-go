@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::game::SetupError;
 use crate::r#move::Move;
 
 /// Errors that can occur during GTP communication.
@@ -11,6 +12,7 @@ pub enum GtpError {
     InvalidVertex(String),
     InvalidColor(String),
     InvalidMove(String),
+    InvalidSetup(SetupError),
     ProcessNotRunning,
     UnsupportedBoardSize(u8),
 }
@@ -37,6 +39,7 @@ impl fmt::Display for GtpError {
             GtpError::InvalidVertex(v) => write!(f, "invalid GTP vertex: {}", v),
             GtpError::InvalidColor(c) => write!(f, "invalid GTP color: {}", c),
             GtpError::InvalidMove(m) => write!(f, "invalid GTP move: {}", m),
+            GtpError::InvalidSetup(err) => write!(f, "invalid GTP setup position: {}", err),
             GtpError::ProcessNotRunning => write!(f, "GTP engine process is not running"),
             GtpError::UnsupportedBoardSize(s) => write!(f, "unsupported board size: {}", s),
         }
@@ -47,6 +50,7 @@ impl std::error::Error for GtpError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             GtpError::Io(e) => Some(e),
+            GtpError::InvalidSetup(err) => Some(err),
             _ => None,
         }
     }

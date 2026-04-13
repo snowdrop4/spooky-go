@@ -1,6 +1,7 @@
 use super::error::GtpError;
 use crate::gtp::{GenmoveResult, GtpEngine};
 use crate::player::Player;
+use crate::position::Position;
 use crate::r#move::Move;
 
 fn gnugo_available() -> bool {
@@ -214,6 +215,30 @@ fn test_gtp_engine_komi() {
 
     engine.set_komi(0.0).expect("set_komi zero failed");
     assert_eq!(engine.komi(), 0.0);
+}
+
+#[test]
+fn test_gtp_engine_set_setup_position() {
+    if !gnugo_available() {
+        eprintln!("gnugo not found, skipping");
+        return;
+    }
+
+    let mut engine =
+        GtpEngine::new("gnugo", &["--mode", "gtp"], 9, 7.5).expect("failed to start gnugo");
+
+    engine
+        .set_setup_position(
+            &[Position::new(0, 0), Position::new(2, 2)],
+            &[Position::new(1, 0)],
+            Player::Black,
+        )
+        .expect("setup position should succeed");
+
+    assert_eq!(engine.turn(), Player::Black);
+    assert!(!engine.legal_moves().contains(&Move::place(0, 0)));
+    assert!(!engine.legal_moves().contains(&Move::place(1, 0)));
+    assert!(!engine.legal_moves().contains(&Move::place(2, 2)));
 }
 
 #[test]
