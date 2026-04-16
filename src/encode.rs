@@ -64,7 +64,12 @@ pub fn encode_spatial_game_planes<const NW: usize>(
     mark_ladder_planes(&mut data, game, board_size);
 
     let self_pass_alive = pass_alive_area(game, &geo, perspective);
-    mark_bitboard(&mut data, PLANE_PASS_ALIVE_SELF, self_pass_alive, board_size);
+    mark_bitboard(
+        &mut data,
+        PLANE_PASS_ALIVE_SELF,
+        self_pass_alive,
+        board_size,
+    );
     let opponent_pass_alive = pass_alive_area(game, &geo, perspective.opposite());
     mark_bitboard(
         &mut data,
@@ -200,7 +205,10 @@ fn group_at<const NW: usize>(
 ) -> Option<GroupInfo<NW>> {
     let board = game.board();
     let owner = board.get_piece(&pos)?;
-    let stones = geo.flood_fill(Bitboard::single(pos.to_index(game.width())), board.stones_for(owner));
+    let stones = geo.flood_fill(
+        Bitboard::single(pos.to_index(game.width())),
+        board.stones_for(owner),
+    );
     let liberties = geo.neighbors(&stones) & board.empty_squares(geo.board_mask);
     Some(GroupInfo {
         owner,
@@ -217,7 +225,13 @@ fn mark_ko_and_superko<const NW: usize>(
 ) {
     let ko_idx = game.ko_point().map(|pos| pos.to_index(game.width()));
     if let Some(ko_point) = game.ko_point() {
-        mark_position(data, PLANE_KO_OR_SUPERKO, ko_point, board_size, game.width());
+        mark_position(
+            data,
+            PLANE_KO_OR_SUPERKO,
+            ko_point,
+            board_size,
+            game.width(),
+        );
     }
 
     if !game.superko() {
@@ -265,7 +279,13 @@ fn positions_from_bitboard<const NW: usize>(bits: Bitboard<NW>, width: u8) -> Ve
 }
 
 fn mark_recent_move_planes<const NW: usize>(data: &mut [f32], game: &Game<NW>, board_size: usize) {
-    for (offset, move_) in game.move_history().iter().rev().take(RECENT_MOVE_COUNT).enumerate() {
+    for (offset, move_) in game
+        .move_history()
+        .iter()
+        .rev()
+        .take(RECENT_MOVE_COUNT)
+        .enumerate()
+    {
         if let Some(pos) = move_.position() {
             mark_position(
                 data,
@@ -437,7 +457,8 @@ fn escape_candidates<const NW: usize>(
     let board = game.board();
     let opponent = target_group.owner.opposite();
     let mut candidate_bits = target_group.liberties;
-    let mut adjacent_opponent_groups = geo.neighbors(&target_group.stones) & board.stones_for(opponent);
+    let mut adjacent_opponent_groups =
+        geo.neighbors(&target_group.stones) & board.stones_for(opponent);
     let empty = board.empty_squares(geo.board_mask);
 
     while let Some(idx) = adjacent_opponent_groups.lowest_bit_index() {
@@ -508,8 +529,8 @@ fn pass_alive_area<const NW: usize>(
             }
         }
 
-        for chain_index in 0..chains.len() {
-            if !active_chains[chain_index] {
+        for (chain_index, is_active) in active_chains.iter_mut().enumerate() {
+            if !*is_active {
                 continue;
             }
             let vital_region_count = regions
@@ -520,7 +541,7 @@ fn pass_alive_area<const NW: usize>(
                 })
                 .count();
             if vital_region_count < 2 {
-                active_chains[chain_index] = false;
+                *is_active = false;
                 changed = true;
             }
         }
@@ -673,9 +694,18 @@ mod tests {
 
         for row in 0..height {
             for col in 0..width {
-                assert_eq!(plane_value(&data, PLANE_ON_BOARD, row, col, height, width), 1.0);
-                assert_eq!(plane_value(&data, PLANE_OWN_STONES, row, col, height, width), 0.0);
-                assert_eq!(plane_value(&data, PLANE_OPP_STONES, row, col, height, width), 0.0);
+                assert_eq!(
+                    plane_value(&data, PLANE_ON_BOARD, row, col, height, width),
+                    1.0
+                );
+                assert_eq!(
+                    plane_value(&data, PLANE_OWN_STONES, row, col, height, width),
+                    0.0
+                );
+                assert_eq!(
+                    plane_value(&data, PLANE_OPP_STONES, row, col, height, width),
+                    0.0
+                );
             }
         }
 
@@ -693,10 +723,22 @@ mod tests {
 
         let (data, _planes, height, width) = encode_spatial_game_planes(&mut game);
 
-        assert_eq!(plane_value(&data, PLANE_OWN_STONES, 4, 4, height, width), 1.0);
-        assert_eq!(plane_value(&data, PLANE_OPP_STONES, 4, 3, height, width), 1.0);
-        assert_eq!(plane_value(&data, PLANE_THREE_LIBERTIES, 4, 4, height, width), 1.0);
-        assert_eq!(plane_value(&data, PLANE_THREE_LIBERTIES, 4, 3, height, width), 1.0);
+        assert_eq!(
+            plane_value(&data, PLANE_OWN_STONES, 4, 4, height, width),
+            1.0
+        );
+        assert_eq!(
+            plane_value(&data, PLANE_OPP_STONES, 4, 3, height, width),
+            1.0
+        );
+        assert_eq!(
+            plane_value(&data, PLANE_THREE_LIBERTIES, 4, 4, height, width),
+            1.0
+        );
+        assert_eq!(
+            plane_value(&data, PLANE_THREE_LIBERTIES, 4, 3, height, width),
+            1.0
+        );
     }
 
     #[test]
@@ -708,7 +750,10 @@ mod tests {
         let (data, _planes, height, width) = encode_spatial_game_planes(&mut game);
         let global = encode_global_state_features(&mut game);
 
-        assert_eq!(plane_value(&data, PLANE_LAST_MOVE_START, 2, 1, height, width), 1.0);
+        assert_eq!(
+            plane_value(&data, PLANE_LAST_MOVE_START, 2, 1, height, width),
+            1.0
+        );
         assert_eq!(global[GLOBAL_PASS_HISTORY_START + 1], 1.0);
     }
 
@@ -726,7 +771,10 @@ mod tests {
         assert!(game.make_move(&Move::place(2, 1)));
 
         let (data, _planes, height, width) = encode_spatial_game_planes(&mut game);
-        assert_eq!(plane_value(&data, PLANE_KO_OR_SUPERKO, 1, 1, height, width), 1.0);
+        assert_eq!(
+            plane_value(&data, PLANE_KO_OR_SUPERKO, 1, 1, height, width),
+            1.0
+        );
     }
 
     #[test]
