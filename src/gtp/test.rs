@@ -1,5 +1,5 @@
 use super::error::GtpError;
-use crate::gtp::{GenmoveResult, GtpEngine};
+use crate::gtp::{GenmoveResult, GtpClient, GtpEngine};
 use crate::player::Player;
 use crate::position::Position;
 use crate::r#move::Move;
@@ -37,6 +37,25 @@ fn test_engine_unsupported_board_size_too_large() {
 fn test_engine_invalid_program() {
     let result = GtpEngine::new("nonexistent_gtp_program_xyz", &[], 9, 7.5);
     assert!(result.is_err());
+}
+
+#[test]
+fn test_gtp_client_process_exit_reports_status_and_stderr() {
+    let mut client = GtpClient::new("/bin/sh", &["-c", "echo fatal gtp details >&2; exit 17"])
+        .expect("shell should start");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    let result = client.name();
+
+    match result {
+        Err(GtpError::ProcessNotRunning(report)) => {
+            assert!(report.command.contains("/bin/sh"));
+            assert_eq!(report.gtp_command, "name");
+            assert!(report.exit_status.as_deref().unwrap_or("").contains("17"));
+            assert!(report.stderr.contains("fatal gtp details"));
+        }
+        other => panic!("expected ProcessNotRunning, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +121,7 @@ fn test_gtp_engine_multiple_moves() {
         GtpEngine::new("gnugo", &["--mode", "gtp"], 9, 7.5).expect("failed to start gnugo");
 
     // Play several moves
-    let moves = vec![
+    let moves = [
         Move::place(2, 2),
         Move::place(6, 6),
         Move::place(2, 6),

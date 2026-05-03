@@ -3,6 +3,14 @@ use std::fmt;
 use crate::game::SetupError;
 use crate::r#move::Move;
 
+#[derive(Debug, Clone)]
+pub struct GtpProcessReport {
+    pub command: String,
+    pub gtp_command: String,
+    pub exit_status: Option<String>,
+    pub stderr: String,
+}
+
 /// Errors that can occur during GTP communication.
 #[derive(Debug)]
 pub enum GtpError {
@@ -13,7 +21,7 @@ pub enum GtpError {
     InvalidColor(String),
     InvalidMove(String),
     InvalidSetup(SetupError),
-    ProcessNotRunning,
+    ProcessNotRunning(GtpProcessReport),
     UnsupportedBoardSize(u8),
 }
 
@@ -40,7 +48,22 @@ impl fmt::Display for GtpError {
             GtpError::InvalidColor(c) => write!(f, "invalid GTP color: {}", c),
             GtpError::InvalidMove(m) => write!(f, "invalid GTP move: {}", m),
             GtpError::InvalidSetup(err) => write!(f, "invalid GTP setup position: {}", err),
-            GtpError::ProcessNotRunning => write!(f, "GTP engine process is not running"),
+            GtpError::ProcessNotRunning(report) => {
+                let exit_status = report.exit_status.as_deref().unwrap_or("unknown");
+                if report.stderr.is_empty() {
+                    write!(
+                        f,
+                        "GTP engine process is not running: command `{}`, GTP `{}`, status {}, stderr <empty>",
+                        report.command, report.gtp_command, exit_status
+                    )
+                } else {
+                    write!(
+                        f,
+                        "GTP engine process is not running: command `{}`, GTP `{}`, status {}, stderr:\n{}",
+                        report.command, report.gtp_command, exit_status, report.stderr
+                    )
+                }
+            }
             GtpError::UnsupportedBoardSize(s) => write!(f, "unsupported board size: {}", s),
         }
     }
