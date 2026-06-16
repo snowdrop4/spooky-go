@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
 paste = "1.0"
-hotpath = { version = "0.15" }
+hotpath = { version = "0.17" }
 rand = { version = "0.10.0", optional = true }
 numpy = { version = "0.28", optional = true }
 
