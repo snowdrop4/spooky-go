@@ -19,7 +19,11 @@ def _rust_move_to_dlgo(rust_move: spooky_go.Move) -> Move:
     if rust_move.is_pass():
         return Move.pass_turn()
     # spooky_go is 0-indexed, dlgo is 1-indexed
-    return Move.play(Point(row=rust_move.row() + 1, col=rust_move.col() + 1))
+    row = rust_move.row()
+    col = rust_move.col()
+    assert row is not None
+    assert col is not None
+    return Move.play(Point(row=row + 1, col=col + 1))
 
 
 def _dlgo_move_to_rust(dlgo_move: Move) -> spooky_go.Move:

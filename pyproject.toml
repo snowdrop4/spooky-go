@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spooky_go"
-version = "0.6.1"
+version = "0.6.2"
 description = "High-performance go library with board sizes from 4x4 to 32x32"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,8 @@ dependencies = []
 [dependency-groups]
 dev = [
     "setuptools-rust",
-    "pyright>=1.1.405",
+    "numpy>=1.24.0",
+    "ty>=0.0.88",
     "pytest>=9.0",
     "pytest-xdist>=3.8.0",
     "ruff>=0.13.1",
@@ -62,3 +63,9 @@ pythonpath = ["."]
 addopts = ["--import-mode=importlib"]
 testpaths = ["tests"]
 norecursedirs = ["deep_learning_and_the_game_of_go"]
+
+[tool.ty.src]
+exclude = ["tests/comparison/deep_learning_and_the_game_of_go"]
+
+[tool.ty.environment]
+extra-paths = ["tests/comparison/deep_learning_and_the_game_of_go/code"]
